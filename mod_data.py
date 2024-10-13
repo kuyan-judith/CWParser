@@ -1,5 +1,5 @@
 import cw_parser_5 as cw
-from cw_parser_5 import Mod, modDocPath
+from cw_parser_5 import Mod, mod_doc_path
 from cw_parser_5 import registered_mods as mods
 
 cw.configure('mod_docs_path',"C:\\Users\\kuyan\\OneDrive\\Documents\\Paradox Interactive\\Stellaris\\mod")
@@ -8,12 +8,12 @@ cw.set_vanilla_path("C:\\Program Files (x86)\\Steam\\steamapps\\common\\Stellari
 
 Mod(
 	is_base = True,
-	mod_path = modDocPath("scripted_trigger_undercoat"),
+	mod_path = mod_doc_path("scripted_trigger_undercoat"),
     workshop_item='2868680633',
 )
 Mod(
 	is_base = True,
-	mod_path = modDocPath("repeating_script_templates"),
+	mod_path = mod_doc_path("repeating_script_templates"),
 )
 
 Mod(
@@ -38,47 +38,47 @@ Mod(
 
 Mod(
 	key = 'dtraits',
-	mod_path = modDocPath('dtraits_for_3'),
+	mod_path = mod_doc_path('dtraits_for_3'),
 	compat_var ='has_diagraphers_trait_mod',
 )
 Mod(
 	key = 'intel_expanded',
-	mod_path = modDocPath('empire_inspector_3'),
+	mod_path = mod_doc_path('empire_inspector_3'),
 	compat_var = 'has_intel_expanded',
 )
 Mod(
 	key = 'ethical_gestalts',
-	mod_path = modDocPath('ethical_gestalts_4'),
+	mod_path = mod_doc_path('ethical_gestalts_4'),
 	compat_var = 'has_ethical_gestalts',
 )
 Mod(
 	key = 'more_corporate_auths',
-	mod_path = modDocPath('more_corporate_auths'),
+	mod_path = mod_doc_path('more_corporate_auths'),
 	compat_var = 'has_more_corporate_authorities',
 )
 Mod(
 	key = 'more_presapient_portraits',
-	mod_path = modDocPath('presapient_portraits_base'),
+	mod_path = mod_doc_path('presapient_portraits_base'),
 	compat_var = 'has_premium_presapient_portraits',
 )
 Mod(
 	key = 'ooc',
-	mod_path = modDocPath('ooc_37'),
+	mod_path = mod_doc_path('ooc_37'),
 	compat_var = 'has_origins_of_civilization',
 )
 Mod(
 	key = 'dfaction',
-	mod_path = modDocPath('pop_ethics_more_demands'),
+	mod_path = mod_doc_path('pop_ethics_more_demands'),
 	compat_var = 'has_diagraphers_faction_and_ethic_mod',
 )
 Mod(
 	key = 'rapid_evolution',
-	mod_path = modDocPath('rapid_evolution_2'),
+	mod_path = mod_doc_path('rapid_evolution_2'),
 	compat_var = 'has_rapid_evolution',
 )
 Mod(
 	key = 'real_space_nebulae',
-	mod_path = modDocPath('real_space_nebulae'),
+	mod_path = mod_doc_path('real_space_nebulae'),
 	compat_var = 'has_real_space_nebulae',
 )
 
