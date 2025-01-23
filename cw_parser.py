@@ -807,13 +807,7 @@ class CWList(UserList):
 
 	def navigateByDict(self,directions:dict) -> Generator[tuple[CWElement,object],None,None]:
 		for element in self.contents():
-			for key in [element.name.lower(),'*']:
-				if key in directions:
-					d = directions[key]
-					if isinstance(d,dict):
-						yield from element.navigateByDict(d)
-					else:
-						yield (element,d)
+			yield from element.navigateByDict(directions)
 
 	def effectScopingRun( self, scopes:scopesContext, criteria:Callable[[CWElement,scopesContext],bool] ) -> Generator[tuple[CWElement,scopesContext],None,None]:
 		scripted_effects = globalSettings['context_mod'].scripted_effects()
@@ -852,10 +846,10 @@ class CWList(UserList):
 					chain = decomposeChain(effectName)
 					if isScopeChain(chain) and effect.hasSubelements():
 						yield from effect.value.effectScopingRun( scopes.link(chain), criteria )
-					else:
-						if effectName in ['create_country','create_rebels']:
-							event_scopes = scopes.step('country').firedContext()
-							onActionScopes('on_country_created').add(event_scopes)
+					# else:
+					# 	if effectName in ['create_country','create_rebels']:
+					# 		event_scopes = scopes.step('country').firedContext()
+					# 		onActionScopes('on_country_created').add(event_scopes)
 				for (effectBlock,scope) in effect.navigateByDict(effectNesting):
 					if effectBlock.hasSubelements():
 						if scope is None:
@@ -1039,8 +1033,14 @@ class CWElement(CWOverwritable):
 			return self.parent().getRoot()
 
 	def navigateByDict(self,directions:dict) -> Generator[tuple[CWElement,object],None,None]:
-		if self.hasSubelements():
-			yield from self.value.navigateByDict(directions)
+		for key in [self.name.lower(),'*']:
+			if key in directions:
+				d = directions[key]
+				if isinstance(d,dict):
+					if self.hasSubelements():
+						yield from self.value.navigateByDict(d)
+				else:
+					yield (self,d)
 
 	def convertGovernmentTrigger( self, trigger:str=None, **kwargs ) -> CWElement:
 		'''returns a copy of a government requirements block converted to normal trigger syntax'''
@@ -1192,13 +1192,13 @@ class CWElement(CWOverwritable):
 				else:
 					script = mod.lookupInline( script_path )
 					if script is None:
-						raise MissingInlineScript
+						raise MissingInlineScript( script_path )
 					else:
 						file = open(script,"r")
 						script = file.read()
 						file.close()
 						for param in self.value:
-							script = script.replace( f'${param.name}$', param.resolve(mod) )
+							script = script.replace( f'${param.name}$', str(param.resolve(mod)) )
 						inline_contents = stringToCW( script, **parse_parameters )
 			# if there are no parameters, read the file immediately
 			else:
@@ -1228,7 +1228,7 @@ class CWElement(CWOverwritable):
 
 class ColorElement(CWListValue):
 	def __init__(self,format:str,*args):
-		super().__init__(*args,**kwargs)
+		super().__init__(*args)
 		self.format = format
 
 	def __str__(self):
@@ -1338,9 +1338,10 @@ class Mod():
 		inline_path = in_common('inline_scripts')
 		for folder in inline_breakdown:
 			inline_path = os.path.join( inline_path, folder )
-		inline_path = inline_path+'.txt'
 		for mod in self.inheritance():
 			try_path = os.path.join( mod.mod_path, inline_path )
+			if os.path.exists( try_path+'.txt' ):
+				return try_path+'.txt'
 			if os.path.exists(try_path):
 				return try_path
 			
@@ -1718,14 +1719,19 @@ def onActionScopes(key:str) -> scopesContext:
 	return globalData['onActionScopes'].setdefault(key,scopesContext())
 
 def decomposeChain(s:str) -> list[str]:
-	return '.'.split(s.lower())
+	return s.lower().split('.')
 
 def isScopeChain(chain:list[str]) -> bool:
 	for unit in chain:
-		if ( not
-		( unit in [ 'root','this','target', 'prev','prevprev','prevprevprev','prevprevprevprev','from','fromfrom','fromfromfrom','fromfromfromfrom', ] )
-		or ( unit in globalSettings['scopeTransitions'] ) or ( unit.startswith('event_target:') )
-		or ( unit.startswith('parameter:') ) ):
+		if not (
+				( unit in [ 'root','this','target', 'prev','prevprev','prevprevprev','prevprevprevprev','from','fromfrom','fromfromfrom','fromfromfromfrom', ] )
+				or
+				( unit in globalSettings['scopeTransitions'] )
+				or
+				( unit.startswith('event_target:') )
+				or
+				( unit.startswith('parameter:') )
+			):
 			return False
 	return True
 
@@ -1745,11 +1751,15 @@ class scopesContext():
 			self.this = scopeSet()
 		else:
 			self.this = toScopes(this)
-		if isinstance(prev,scopesContext):
-			self.prev = prev
-		elif isinstance(prev,list):
+		if isinstance(prev,list):
 			if len(prev) > 0:
 				self.prev = scopesContext(prev.pop(),root=self.root,froms=self.froms,prev=prev)
+			else:
+				self.prev = None
+		else:
+			self.prev = prev
+		if self.prev is None:
+			self.prev = self
 		if lock:
 			self.this.locked = True
 
@@ -1775,6 +1785,9 @@ class scopesContext():
 			result = froms.pop(0)
 		self.this = result
 		self.froms = froms
+
+	def setThisKey(self,key):
+		self.this = scopeSet(key)
 
 	def link(self,commands:list[str]|str):
 		if isinstance(commands,str):
@@ -1802,14 +1815,14 @@ class scopesContext():
 			elif command == 'fromfromfromfrom':
 				context.toFrom(4)
 			elif command in scopeTransitions:
-				context.this = scopeTransitions[command]
+				context.setThisKey( scopeTransitions[command] )
 			elif command == 'target':
-				context.this = '[TARGET]'
+				context.setThisKey( '[TARGET]' )
 			elif command.startswith('event_target:'):
 				key = command.split(':')[1]
 				context.this = eventTarget(key)
 			elif command.startswith('parameter:'):
-				context.this = 'country'
+				context.setThisKey( 'country' )
 		context.prev = self
 		return context
 
@@ -1820,6 +1833,20 @@ class scopesContext():
 
 	def unpackThis(self):
 		return self.this.unpack()
+	
+	def __repr__(self):
+		return str(self.this.unpack())
+	
+	def __str__(self):
+		if self.prev is None:
+			prevtext = "None"
+		else:
+			prevtext = str(self.prev.unpackThis())
+		fromtext = []
+		for f in self.froms:
+			fromtext.append( str(f.unpack()) )
+		else:
+			return f"{self.root.unpackThis()}->{self.unpackThis()} Prev: {prevtext} From: {''.join(fromtext)}"
 
 def findEffectScopes(criteria:Callable[[CWElement,scopesContext],bool],mods:Iterator[Mod]=registered_mods.values()) -> list[tuple[CWElement,scopesContext]]:
 	configure('expand_inlines',True)
@@ -1853,7 +1880,7 @@ def findEffectScopes(criteria:Callable[[CWElement,scopesContext],bool],mods:Iter
 			for (effectBlock,scopes) in mod.read_folder(folder).navigateByDict( effectLocations[folder] ):
 				for effect in effectBlock.effectScopingRun(scopes,criteria):
 					output_effects.append(effect)
-		print(f'processing mod "{str(mod)}" events"')
+		print(f'processing mod "{str(mod)}" events')
 		for event in mod.events():
 			if event.hasSubelements():
 				scopes = globalData['eventScopes'][event.getValue('id',resolve=True)]
