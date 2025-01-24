@@ -14,7 +14,7 @@ cw_parser contains a range of functions and modules for parsing clausewitz-style
 
 mod_data contains *example code* of how one might set up mods; it is not usable as-is since it relies on computer-specific details of which mods are downloaded and which are locally built.
 
-cwp_stellaris contains stellaris-specific configuration for effect parsing. However, cw_parser's effect parsing functionality currently still has serious bugs such that I don't recommend using it.
+cwp_stellaris contains stellaris-specific configuration for effect parsing.
 
 \*\*\*
 
@@ -47,7 +47,7 @@ For the purpose of full-file overwriting, mods are assumed to be loaded in the o
 
 For the purpose of looking inside inline scripts, resolving global variables, and so on, the parser needs to know which mods to treat as loaded. This can be controlled using the Mod.is_base property, the Mod.parents property, and the Mod.activate() method.
 
-At a given time, the game will assume that the following mods are active:
+At a given time, the module will assume that the following mods are active:
 	- All mods where is_base=True (including cw_parser.vanilla_mod_object)
 	- The current active mod, i.e. whichever mod *most recently* had its Mod.activate() method called.
 	- All mods in the current active mod's Mod.parents list.
@@ -62,6 +62,15 @@ The registered_mods dictionary is a dictionary containing all Mods where the 'ke
 
 functions:
 
+set_vanilla_path( str ):
+	tells the module where to find the vanilla game
+
+set_mod_docs_path( str ):
+	tells the module where to find your homemade mods
+
+set_workshop_path( str ):
+	tells the modulewhere to find steam workshop mods
+
 set_expand_inlines( bool ):
 	sets whether to look inside inline scripts by default when iterating over CWList contents (default False)
 
@@ -70,6 +79,10 @@ set_replace_local_variables( bool ):
 
 set_parser_commands( list\[str\] ):
 	Sets a list of strings that identify commands for the parser by default. By default, this is \["CW_PARSER"\], meaning that all file contents between "#CW_PARSER:skip" and "#CW_PARSER:/skip" will be ignored.
+
+set_load_order( list\[Mod\] ):
+	Changes the assumed load order. By default, mods are assumed to be loaded in the order the objects were created.
+	The list given as input should be in REVERSE load order.
 
 to_yesno( bool ):
 	converts a boolean to a string "yes" or "no"
@@ -138,6 +151,15 @@ stringToCW( string, filename=None, replace_local_variables=None, parser_commands
 fileToCW( path, filename=None, parent=None, replace_local_variables=None, parser_commands=None, overwrite_type="LIOS", mod=None, bracketClass=cw_parser.CWListValue ) -> CWList:
 	Parses a file using stringToCW.
 	If filename is not given, defaults to using that file's filename.
+
+findEffectScopes( criteria, mods=cw_parser.registered_mods.values() ):
+Scans all effect blocks (except, currently, those in queue_actions blocks) and returns a list of (CWElement,scopesContext) tuples corresponding to effects.
+Note: this function requires game-specific configuration. Stellaris configuration can be set up by importing and running cwp_stellaris.configureCWP().
+Note: currently this function is unable to see effects that are within "queue_actions" block
+
+parameters:
+	criteria (callable[CWElement to boolean]): Should take a CWElement and return a boolean. Effects will be included in the returned list if criteria(effect) return True.
+	mods (iterator[cw_parser.Mod]): Provides the mods to scan. When the iterator returns a mod where is_base=True (for example, when cw_parser.registered_mods.values() returns the vanilla mod object), this function will also scan all mods where is_base=True. 
 
 \*\*\*
 
@@ -327,3 +349,53 @@ Class for representing the right-hand-side values of scripted effects, stripted 
 public methods:
 	inst( params={} ):
 		returns a CWList object matching the output of this metascript when given the parameter values in params (e.g. replacing "$VALUE$" with params["VALUE"]).
+
+<b>scopesContext( this=None, *args, froms=[], root=None, prev=None, lock=False )</b>
+Class for representing the scope-type context of an effect, trigger etc.
+
+public properties:
+	prev: points to the scopesContext corresponding to this object's "prev" scope
+	froms: list of scopesContex objects corresponding to this object's "from", "fromfrom" etc. scopes. If you run into the end of this list, you may need to increase cw_parser.globalSettings['max_from_depth'].
+
+public methods:
+	unpackThis():
+		returns a list of strings corresponding to the possible "this" scopes for this context
+		Possible values for Stellaris:
+		- "none" (for e.g. effects directly under an on_game_start event's "immediately" block)
+		- "country"
+		- "pop_faction"
+		- "first_contact"
+		- "situation"
+		- "agreement"
+		- "federation"
+		- "archaeological_site"
+		- "spy_network"
+		- "espionage_asset"
+		- "megastructure"
+		- "planet"
+		- "ship"
+		- "pop"
+		- "fleet"
+		- "galactic_object"
+		- "leader"
+		- "army"
+		- "ambient_object"
+		- "species"
+		- "design"
+		- "war"
+		- "alliance"
+		- "starbase"
+		- "deposit"
+		- "observer"
+		- "sector"
+		- "astral_rift"
+		- "espionage_operation"
+		- "design"
+		- "cosmic_storm"
+		plus the following strings corresponding to contexts where I found figuring out the appropriate scopes automatically was too complicated:
+		- "[EFFECT_BUTTON_SCOPE]"
+		- "[TARGET]" (for anything selected for being the target of an espionage operation, situation, spy network, or agreement)
+		- "[COUNTRY_CREATION_ANTECEDENT]"
+		- "[SOLAR_SYSTEM_INITIALIZER_ANTECEDENT]"
+	link( commands ):
+		takes a string such as "root.owner" and returns a scopesContext object corresponding to where such a string would point in the current scope. "<object>.link(object.resolveValue())" is often useful.

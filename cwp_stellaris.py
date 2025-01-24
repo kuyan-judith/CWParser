@@ -1,5 +1,5 @@
-from cw_parser_5 import scopesContext, in_common, globalData, Mod, match, CWElement, onActionScopes
-from cw_parser_5 import configure as config
+from cw_parser import scopesContext, in_common, globalData, Mod, match, CWElement, onActionScopes
+from cw_parser import configure as config
 from typing import Generator
 
 dlc_list = [
@@ -48,7 +48,7 @@ scope_types = {
 	'army':'army',
 	'ambient_object':'ambient_object',
 	'species':'species',
-	'design,pop_faction':'design,pop_faction',
+	'design':'design',
 	'war':'war',
 	'alliance':'alliance',
 	'starbase':'starbase',
@@ -599,6 +599,7 @@ scopeTransitions = {
 	'fleet':'fleet',
 	'design':'design',
 	'capital_scope':'planet',
+	'owner':'country',
 	'controller':'country',
 	'target_system':'galactic_object',
 	'home_planet':'planet',
@@ -770,7 +771,7 @@ hardcodedOnActions = {
 	'on_post_communications_established':scopesContext('country','country'),
 	'on_post_communications_established_always_fire':scopesContext('country','country'),
 	'on_presence_revealed':scopesContext('country','country'),
-	'on_pop_bombed_to_death':scopesContext('planet','country'),
+	'on_pop_bombed_to_death':scopesContext('planet','country','fleet'),
 	'on_new_heir':scopesContext('leader'),
 	'on_heir_promoted_to_ruler':scopesContext('leader'),
 	'on_ruler_created':scopesContext('country','leader'),
@@ -953,6 +954,24 @@ hardcodedOnActions = {
 	'on_storm_finished':scopesContext('cosmic_storm'),
 	'on_storm_encountered':scopesContext('country','cosmic_storm'),
 	'debug_spawn_storm_random_system':scopesContext('none'),
+	'on_colony_destroyed_by_bombardment':scopesContext('planet','country'),
+	'on_damage_taken':scopesContext('ship','ship'),
+	'on_fleet_exit_battle':scopesContext('fleet'),
+	'on_country_type_changed':scopesContext('country'),
+	'on_debris_reanimated':scopesContext('country','debris','country','ship'),
+	'on_snare_sent':scopesContext('fleet','fleet'),
+	'on_specimen_acquired':scopesContext('country'),
+	'on_specimen_sold':scopesContext('country'),
+	'on_ship_engulfed':scopesContext('ship','ship'),
+	'on_exhibit_unlocked':scopesContext('country'),
+	'on_fauna_captured':scopesContext('ship','fleet'),
+	'on_fauna_capture_ended':scopesContext('fleet'),
+	'on_vivarium_populated':scopesContext('country'),
+	'on_space_fauna_culled':scopesContext('country','design'),
+	'on_leader_captured':scopesContext('leader','country','country','galactic_object'),
+	'on_specimen_sold':scopesContext('country'),
+	'on_specimen_sold':scopesContext('country'),
+	'on_country_created':scopesContext('country','[COUNTRY_CREATION_ANTECEDENT]'),
 }
 
 def effectParseAdditionalSetup(mod:Mod):

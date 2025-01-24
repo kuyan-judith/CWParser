@@ -584,6 +584,7 @@ def resolveValue( value, vars:Mod|None=None ):
 	return value
 
 class CWList(UserList):
+	'''Class for representing blocks of CW script such as the contents of a folder or the contents of a pair of brackets. Should generally be created using a function such as stringToCW.'''
 	def __init__(self,*args,local_variables={},bracketClass:type|None=None):
 		if bracketClass is None:
 			bracketClass = CWListValue
@@ -728,6 +729,11 @@ class CWList(UserList):
 		return type(self)( deepcopy(self.data,memo), local_variables=deepcopy(self.local_variables,memo), bracketClass=self.bracketClass )
 
 	def contents( self, expand_inlines:bool|None=None, inlines_mod:Mod|None=None, expansion_exceptions:Callable[[CWElement],bool]=lambda _: False ) -> Generator[CWElement,None,None]:
+		'''yields the elements of this CWList.
+		parameters:
+		expand_inlines (optional): whether to expand inline scripts. If not specified, defaults to cw_parser.globalSettings['expand_inlines']
+		inlines_mod (optional): mod to source inline expansions from. If not specified, defaults to cw_parser.globalSettings['context_mod']
+		expansion_exceptions (optional): callable taking a CWElement. Inline scripts for which this will be returned rather than expanded.'''
 		expand_inlines = defaultToGlobal(expand_inlines,'expand_inlines')
 		inlines_mod = defaultToGlobal(inlines_mod,'context_mod')
 		for element in self:
@@ -809,13 +815,13 @@ class CWList(UserList):
 		for element in self.contents():
 			yield from element.navigateByDict(directions)
 
-	def effectScopingRun( self, scopes:scopesContext, criteria:Callable[[CWElement,scopesContext],bool] ) -> Generator[tuple[CWElement,scopesContext],None,None]:
+	def effectScopingRun( self, scopes:scopesContext, criteria:Callable[[CWElement],bool] ) -> Generator[tuple[CWElement,scopesContext],None,None]:
 		scripted_effects = globalSettings['context_mod'].scripted_effects()
 		effectNesting = globalSettings['effectNesting']
 		eventTypes = globalSettings['eventTypes']
 		for effect in self.contents(expand_inlines=True):
 			effect.scopes = scopes
-			if criteria(effect,scopes):
+			if criteria(effect):
 				yield (effect,scopes)
 			if effect.name is None:
 				print(effect.filename)
@@ -964,6 +970,7 @@ class CWElement(CWOverwritable):
 		return resolveValue(self.value,vars)
 
 	def hasSubelements(self):
+		'''returns True for elements of the form <key> = {<stuff>}, false otherwise.'''
 		return isinstance(self.value,CWList)
 
 	def getElements( self, key:str|None, **kwargs ) -> Generator[CWElement,None,None]:
@@ -1268,9 +1275,10 @@ class Mod():
 	parameters:
 	workshop_item (optional): The number for this mod in Steam Workshop.
 	mod_path (optional): The path for this mod. If not specified it will be derived from workshop_item.
-	parents (optional): List of other mods to assume are also loaded if this one is, in reverse load order. Default [].
-	is_vanilla (optional): Boolean that indicates whether a mod object is vanilla. Default False.
-	vanilla_object (optiona): overwrites the default vanilla mod object
+	parents (optional): List of other mods to assume are also loaded if this one is. Default [].
+	is_base (optional): Boolean. While this is True, the script will always assume this mod is loaded.
+	key (optional): String that serves as a key for this mod in the cw_parser.registered_mods dictionary.
+	compat_var (optional): Sets the compat_var property, which is for holding the name of this mod's compatibility variable. Nothing in this module accesses this property; feel free to leave it empty unless your script needs it.
 	'''
 	def __init__( self, workshop_item:str|None = None, mod_path:str|None = None, parents:list[Mod] = [], is_base:bool=False, key:str|None=None, compat_var:str|None=None ) -> None:
 		if mod_path is None:
@@ -1310,12 +1318,17 @@ class Mod():
 			self.mod_name = "Vanilla"
 
 	def activate(self):
+		'''sets this mod as the current active mod - inline scripts and global variables will be sourced from this mod, its parents, and mods where base=True'''
 		configure('context_mod',self)
 
 	def load_metascripts(self) -> Self:
-		self.generate_content_dictionary( 'scripted_triggers', in_common('scripted_triggers'), bracketClass=metaScript, replace_local_variables=True )
-		self.generate_content_dictionary( 'scripted_effects', in_common('scripted_effects'), bracketClass=metaScript, replace_local_variables=True )
-		self.generate_content_dictionary( 'script_values', in_common('script_values'), bracketClass=metaScript, replace_local_variables=True )
+		'''Loads scropted triggers and effects.'''
+		for mod in self.inheritance():
+			if not mod.metascripts_loaded:
+				mod.generate_content_dictionary( 'scripted_triggers', in_common('scripted_triggers'), bracketClass=metaScript, replace_local_variables=True )
+				mod.generate_content_dictionary( 'scripted_effects', in_common('scripted_effects'), bracketClass=metaScript, replace_local_variables=True )
+				mod.generate_content_dictionary( 'script_values', in_common('script_values'), bracketClass=metaScript, replace_local_variables=True )
+				mod.metascripts_loaded = True
 		self.inherit_content_dictionary('scripted_triggers')
 		self.inherit_content_dictionary('scripted_effects')
 		self.inherit_content_dictionary('script_values')
@@ -1380,13 +1393,16 @@ class Mod():
 							yield filepath
 
 	def read_folder( self, path:str, exclude_files:list[str]=[], replace_local_variables:bool|None=None, include_parents:bool|None=None, file_suffix:str='.txt', parser_commands:str|list[str]|None=None, overwrite_type:str|None='LIOS', bracketClass:type=CWListValue, save:bool=True, save_key:str|None=None, print_filenames:bool = False, always_read:bool=False ) -> CWList[CWElement]:
-		'''reads and parses the files in the specified folder in this mod into a list of CWElements
+		'''reads and parses the files in the specified folder in this mod into a CWList object
 		parameters:
 		path: the path to the specified folder, relative to the mod
 		exclude_files (optional): a lost of filenames to skip, e.g. because the entries within are dummy elements or because they're assumed to have been overwritten
 		replace_local_variables (optional): if True, locally-defined scripted variables will be replaced with their values.
 		include_parents (optional): if True, also load contents of parent folders that aren't file-overwritten
 		file_suffix (optional): only files with this suffix will be read. Default '.txt'
+		save (optional): if not set to False, the returned CWList is saved to the mod's content_lists dictionary.
+		save_key (optional): key under which to save to the content_lists dictionary. Defaults to path.
+		print_filenames (optional): if True, the function will print the name of each file as it reads it.
 		parser_commands (optional): if this is set to a string or list of strings, the following tags will be enabled (where KEY stands for any of the entered strings):
 		"#KEY:skip", "#KEY:/skip": ignore everything between these tags (or from the "#KEY:skip" to the end of the string if "#KEY:/skip" is not encountered)
 		"#KEY:add_metadata:<metadata key>:<metadata value>": set the specified attribute in the "metadata" dictionary to the specified value for the next object
@@ -1666,9 +1682,6 @@ def set_load_order(mods:list[Mod]):
 		load_order.remove(mod)
 	configure('mod_order',mods+load_order)
 
-def set_context_mod(mod:Mod):
-	configure('context_mod',mod)
-
 class scopeUnpackable(ABC):
 	@abstractmethod
 	def unpack(self,unpackTree:set|None=None) -> Iterator[str]:
@@ -1736,6 +1749,13 @@ def isScopeChain(chain:list[str]) -> bool:
 	return True
 
 class scopesContext():
+	'''Class for representing the context of an effect, trigger etc. in terms of whether it's in country scope, ship scope etc. and where "from" and "prev" point to.
+	Scope list can be accessed using the unpackThis() method.
+	public properties:
+	prev: a scopesContext corresponding to the "prev" scope
+	root: a scopesContext corresponding  to the "root" scope
+	froms: a list containing the from, fromfrom, fromfromfrom, fromfromfromfrom, fromfromfromfrom.from etc. If you run into the end of this list, try increasing cw_parser.globalSettings['max_from_depth']
+	'''
 	def __init__(self,this=None,*args,froms=[],root=None,prev=None,lock=False) -> None:
 		froms = list(args) + froms
 		self.froms = [ toScopes(f) for f in froms ]
@@ -1790,6 +1810,7 @@ class scopesContext():
 		self.this = scopeSet(key)
 
 	def link(self,commands:list[str]|str):
+		'''takes a string such as "prev.owner" and returns a scopesContext correspondinf to where that string would lead to.'''
 		if isinstance(commands,str):
 			commands = decomposeChain(commands)
 		context = copy(self)
@@ -1832,6 +1853,45 @@ class scopesContext():
 		return scopesContext(self.this,froms=froms)
 
 	def unpackThis(self):
+		'''Returns a list of strings representing the possible "this" scopes for this context.
+		Possible values for Stellaris:
+		- "none" (for e.g. effects directly under an on_game_start event's "immediately" block)
+		- "country"
+		- "pop_faction"
+		- "first_contact"
+		- "situation"
+		- "agreement"
+		- "federation"
+		- "archaeological_site"
+		- "spy_network"
+		- "espionage_asset"
+		- "megastructure"
+		- "planet"
+		- "ship"
+		- "pop"
+		- "fleet"
+		- "galactic_object"
+		- "leader"
+		- "army"
+		- "ambient_object"
+		- "species"
+		- "design"
+		- "war"
+		- "alliance"
+		- "starbase"
+		- "deposit"
+		- "observer"
+		- "sector"
+		- "astral_rift"
+		- "espionage_operation"
+		- "design"
+		- "cosmic_storm"
+		plus the following strings corresponding to contexts where I found figuring out the appropriate scopes automatically was too complicated:
+		- "[EFFECT_BUTTON_SCOPE]"
+		- "[TARGET]" (for anything selected for being the target of an espionage operation, situation, spy network, or agreement)
+		- "[COUNTRY_CREATION_ANTECEDENT]"
+		- "[SOLAR_SYSTEM_INITIALIZER_ANTECEDENT]"
+		'''
 		return self.this.unpack()
 	
 	def __repr__(self):
@@ -1848,11 +1908,16 @@ class scopesContext():
 		else:
 			return f"{self.root.unpackThis()}->{self.unpackThis()} Prev: {prevtext} From: {''.join(fromtext)}"
 
-def findEffectScopes(criteria:Callable[[CWElement,scopesContext],bool],mods:Iterator[Mod]=registered_mods.values()) -> list[tuple[CWElement,scopesContext]]:
+def findEffectScopes(criteria:Callable[[CWElement],bool],mods:Iterator[Mod]=registered_mods.values()) -> list[tuple[CWElement,scopesContext]]:
+	'''Scans all effect blocks (except, currently, those in queue_actions blocks) and returns a list of (CWElement,scopesContext) tuples corresponding to effects.
+	Note: this function requires game-specific configuration. Stellaris configuration can be set up by importing and running cwp_stellaris.configureCWP().
+	parameters:
+	criteria: A callable taking a CWElement and returning a boolean. Effects will be included in the returned list where criteria(effect) return True.
+	mods (optional): An iterator returning mods. This function will scan all mods returned by this iterator. Default is cw_parser.registered_mods.values(). When the iterator returns a mod where is_base=True (for example, when cw_parser.registered_mods.values() returns the vanilla mod object), this function will also scan all mods where is_base=True.'''
 	configure('expand_inlines',True)
 	configure('replace_local_variables',True)
 	for mod in mods:
-		configure('context_mod',mod)
+		mod.activate()
 		print(f'loading metascripts for mod {str(mod)}')
 		mod.load_metascripts()
 		print(f'loading events for mod {str(mod)}')
@@ -1866,7 +1931,7 @@ def findEffectScopes(criteria:Callable[[CWElement,scopesContext],bool],mods:Iter
 		onActionScopes(on_action).add(hardcodedOnActions[on_action])
 	
 	for mod in mods:
-		configure('context_mod',mod)
+		mod.activate()
 		globalSettings['effectParseAdditionalSetup'](mod)
 		print(f'activating on_actions for mod {str(mod)}')
 		mod.activate_on_actions()
@@ -1874,7 +1939,7 @@ def findEffectScopes(criteria:Callable[[CWElement,scopesContext],bool],mods:Iter
 	effectLocations = globalSettings['effectLocations']
 	output_effects = []
 	for mod in mods:
-		configure('context_mod',mod)
+		mod.activate()
 		for folder in effectLocations:
 			print(f'processing mod "{str(mod)}" folder "{folder}"')
 			for (effectBlock,scopes) in mod.read_folder(folder).navigateByDict( effectLocations[folder] ):

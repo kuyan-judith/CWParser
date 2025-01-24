@@ -1,6 +1,6 @@
-import cw_parser_5 as cw
-from cw_parser_5 import Mod, mod_doc_path
-from cw_parser_5 import registered_mods as mods
+import cw_parser as cw
+from cw_parser import Mod, mod_doc_path
+from cw_parser import registered_mods as mods
 
 cw.configure('mod_docs_path',"C:\\Users\\kuyan\\OneDrive\\Documents\\Paradox Interactive\\Stellaris\\mod")
 cw.configure('workshop_path',"C:\\Program Files (x86)\\Steam\\steamapps\\workshop\\content\\281990")
