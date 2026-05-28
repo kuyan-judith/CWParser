@@ -2,13 +2,18 @@
 
 import re
 import os
-from typing import Generator, Callable, Self
+from typing import Generator, Callable, Self, Iterable
 from numbers import Number
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Iterable
 from collections import UserList, UserDict
 from copy import copy, deepcopy
 from time import sleep
+import operator as op
+import json
+from graphlib import TopologicalSorter
+import zipfile as zip
+from pathlib import Path
 
 
 
@@ -27,9 +32,10 @@ globalSettings = {
 	'hardcodedOnActions':{},
 	'effectParseAdditionalSetup':lambda mod: None,
 	'additionalEffectBlocks':lambda mod: [],
-	'mod_docs_path':"C:\\Users\\kuyan\\OneDrive\\Documents\\Paradox Interactive\\Stellaris\\mod",
-	'workshop_path': "C:\\Program Files (x86)\\Steam\\steamapps\\workshop\\content\\281990",
-	'vanilla_path':"C:\\Program Files (x86)\\Steam\\steamapps\\common\\Stellaris",
+	'mod_docs_path':r"D:\Documents\Paradox Interactive\Stellaris\mod",
+	'workshop_path': r"D:\SteamLibrary\steamapps\workshop\content\281990",
+	'vanilla_path':r"D:\SteamLibrary\steamapps\common\Stellaris",
+	'game_version':None,
 	'mod_order':[],
 }
 globalData = {
@@ -66,6 +72,16 @@ def configure(key,value):
 	global globalSettings
 	globalSettings[key] = value
 
+def get_mod_order() -> list['Mod']:
+	return globalSettings['mod_order']
+
+def set_load_order(mods:list['Mod']):
+	'''given a list of mods, move those mods to the end of assumed load order (with the first listed mod coming last)'''
+	load_order = get_mod_order()
+	load_order = [ mod for mod in load_order if (not mod in mods) ]
+	configure('mod_order',mods+load_order)
+
+
 def printsleep(s,time=0):
 	if globalSettings['debug_print']:
 		print(s)
@@ -73,6 +89,22 @@ def printsleep(s,time=0):
 
 def mod_doc_path(name):
 	return os.path.join(globalSettings['mod_docs_path'],name)
+
+encodings = ['utf-8','gbk','utf-8-sig']
+
+def file_text(path:str|Path|zip.Path) -> str:
+	if isinstance(path,str):
+		path = Path(str)
+	first_exception = None
+	for encoding in encodings:
+		try:
+			with path.open("r",encoding=encoding) as file:
+				contents = file.read()
+			return contents
+		except Exception as e:
+			if first_exception is None:
+				first_exception = e
+	raise first_exception
 
 class ShallowFromsException(Exception):
 	pass
@@ -121,6 +153,76 @@ class scopeSet(scopeUnpackable):
 class scopesContext():
 	pass
 
+class Version():
+	def __init__(self,input):
+		if not isinstance(input,str):
+			input = str(input)
+		input = input.replace('v','')
+		elements = input.split('.')
+		self.levels = []
+		for element in elements:
+			try:
+				self.levels.append( int(element) )
+			except:
+				break
+		
+	def first_unmatched(self,other):
+		if not isinstance(other,Version):
+			other = Version(other)
+		i = 0
+		while i < len(self.levels) and i < len(other.levels):
+			if self.levels[i] != other.levels[i]:
+				return (self.levels[i],other.levels[i])
+		return None
+
+	def is_compatible(self,other,depth=3):
+		if not isinstance(other,Version):
+			other = Version(other)
+		i = 0
+		while i < len(self.levels) and i < len(other.levels) and i < depth:
+			if self.levels[i] != other.levels[i]:
+				return False
+			i += 1
+		return True
+
+	# def comparison(self,other,method:Callable,on_match:bool):
+	# 	fum = self.first_unmatched(other)
+	# 	if fum is None:
+	# 		return on_match
+	# 	if isinstance(other,Version):
+	# 		# if self.major_version == other.major_version:
+	# 		# 	return method(self.minor_version,other.minor_version)
+	# 		# else:
+	# 		return method(self.major_version,other.major_version)
+	# 	else:
+	# 		return method(self.major_version,other)
+		
+	def __str__(self):
+		level_strings = [ str(i) for i in self.levels ]
+		while len(level_strings) < 3:
+			level_strings.append('*')
+		s = '.'.join(level_strings)
+		return f"v{s}"
+
+	# def __lt__(self,other:'Version'):
+	# 	return self.comparison(other,op.lt)
+
+	# def __gt__(self,other:'Version'):
+	# 	return self.comparison(other,op.gt)
+
+	# def __eq__(self,other:'Version'):
+	# 	return self.comparison(other,op.eq)
+
+	# def __ne__(self,other:'Version'):
+	# 	return self.comparison(other,op.ne)
+
+	# def __ge__(self,other:'Version'):
+	# 	return self.comparison(other,op.ge)
+
+	# def __le__(self,other:'Version'):
+	# 	return self.comparison(other,op.le)
+
+
 def escapeString(s:str) -> str:
 	return s.replace('\\','\\\\').replace('"','\\"')
 
@@ -130,6 +232,8 @@ def quote(s:str) -> str:
 
 def numerify(s:str) -> int|float|str:
 	'''tries to convert a string to an integer or float'''
+	if isinstance(s,inlineMathsBlock):
+		return s.nested()
 	try:
 		sn = s.replace(' ','').replace('--','')
 		return int(s)
@@ -406,9 +510,9 @@ class CWOverwritable():
 		overwrite_type:str|None=None,
 		mod:Mod|None=None,
 	) -> None:
-		self.filename = filename
-		self.overwrite_type = overwrite_type
-		self.mod = mod
+		self.filename:str|None = filename
+		self.overwrite_type:str|None = overwrite_type
+		self.mod:Mod|None = mod
 
 	def overwrites( self, other:CWOverwritable, default:bool ):
 		if self.overwrite_type == 'LIOS':
@@ -428,7 +532,7 @@ class CWOverwritable():
 
 class inlineMathsStep():
 	def __init__( self, operator:str|None=None, value=None, negative=False ):
-		self.operator = operator
+		self.operator:str|None = operator
 		self.value = value
 		self.negative = False
 
@@ -464,6 +568,7 @@ class inlineMathsStep():
 			return prev % self.value
 
 class inlineMathsBlock(UserList):
+	startchar = '('
 	endchar = ')'
 
 	def __str__(self) -> str:
@@ -526,6 +631,9 @@ class inlineMathsBlock(UserList):
 	def simplification( self, vars:Mod|None=None ):
 		c = deepcopy(self)
 		return c.simplify(vars=vars)
+	
+	def nested(self):
+		return self.copy()
 
 class inlineMathsUnit(inlineMathsBlock):
 	startchar = '@['
@@ -548,6 +656,9 @@ class inlineMathsUnit(inlineMathsBlock):
 			return '@' + value
 		else:
 			return value
+		
+	def nested(self):
+		return inlineMathsBlock( self.data )
 
 class absValBlock(inlineMathsBlock):
 	startchar = '|'
@@ -564,10 +675,10 @@ class absValBlock(inlineMathsBlock):
 		value = super().simplify( vars=vars )
 		if isinstance( value, Number ):
 			return abs(value)
-		elif isinstance( value, str ):
-			return self
-		else:
+		elif isinstance( value, absValBlock ):
 			return value
+		else:
+			return self
 
 def resolveValue( value, vars:Mod|None=None ):
 	'''	attempts to solve inlineMathsBlocks and look up global variables to give a final value.
@@ -811,6 +922,11 @@ class CWList(UserList):
 		for element in self.getElements(key,**kwargs):
 			yield from element.getElements(None,**kwargs)
 
+	def getSublistContents( self, key:str|None, **kwargs ) -> Generator[CWElement,None,None]:
+		'''yeilds each element within the specified list subelement'''
+		for element in self.getElements(key,**kwargs):
+			yield from element.contents(**kwargs)
+
 	def navigateByDict(self,directions:dict) -> Generator[tuple[CWElement,object],None,None]:
 		for element in self.contents():
 			yield from element.navigateByDict(directions)
@@ -875,7 +991,7 @@ class CWElement(CWOverwritable):
 	def __init__(
 		self,
 		name:str|None=None,
-		comparitor:list[str]=[],
+		comparitor:list[str]=None,
 		value=None,
 		parent_list:CWList|None=None,
 		filename:str|None=None,
@@ -886,6 +1002,8 @@ class CWElement(CWOverwritable):
 	) -> None:
 		super().__init__(filename,overwrite_type,mod)
 		self.name = name
+		if comparitor is None:
+			comparitor = []
 		self.comparitor = comparitor
 		self.setValue( value )
 		self.parent_list = parent_list
@@ -1032,6 +1150,11 @@ class CWElement(CWOverwritable):
 		if self.hasSubelements():
 			yield from self.value.getArrayContentsElements(key,**kwargs)
 
+	def getSublistContents( self, key:str|None, **kwargs ) -> Generator[CWElement,None,None]:
+		'''yeilds each element within the specified list subelement'''
+		if self.hasSubelements():
+			yield from self.value.getSublistContents(key,**kwargs)
+
 	def getRoot(self) -> CWElement:
 		'''returns the top-level object containing this one'''
 		if self.parent() is None:
@@ -1159,6 +1282,10 @@ class CWElement(CWOverwritable):
 		conditionals = {
 			'generic_parts/giga_toggled_code':('toggle','code'),
 			'conditional/parts/tec_step':('x','code'),
+			'UAC_MOR/toggled_code':('toggle','code'),
+			'stu/conditional_script':('toggle','code'),
+			'merger_of_rules/toggled_code':('toggle','code'),
+			'sartek/sartek_toggled_code':('toggle','code'),
 		}
 		parse_parameters = {
 			'parser_commands':parser_commands,
@@ -1172,10 +1299,17 @@ class CWElement(CWOverwritable):
 			# if there are parameters, replace them before parsing
 			if self.hasSubelements():
 				script_path = self.getValue('script')
+				if script_path == "paragon/global_faction_demands": # 4.3 update special case
+					script_path = "pop_faction_types/global_faction_demands"
 				# because quote escaping in inline scripts is too mysterious for me to simulate properly
 				if script_path in conditionals:
 					(toggle,contents)=conditionals[script_path]
-					if self.getElement(toggle).resolve(mod) == '1':
+					toggle_value = self.getElement(toggle).resolve(mod)
+					try:
+						toggle_value = float(toggle_value)
+					except:
+						toggle_value = 0
+					if toggle_value > 0:
 						inline_contents = stringToCW( self.getValue(contents), **parse_parameters )
 					else:
 						inline_contents = CWList(bracketClass=bracketClass)
@@ -1201,9 +1335,7 @@ class CWElement(CWOverwritable):
 					if script is None:
 						raise MissingInlineScript( script_path )
 					else:
-						file = open(script,"r")
-						script = file.read()
-						file.close()
+						script = file_text(script)
 						for param in self.value:
 							script = script.replace( f'${param.name}$', str(param.resolve(mod)) )
 						inline_contents = stringToCW( script, **parse_parameters )
@@ -1279,43 +1411,166 @@ class Mod():
 	is_base (optional): Boolean. While this is True, the script will always assume this mod is loaded.
 	key (optional): String that serves as a key for this mod in the cw_parser.registered_mods dictionary.
 	compat_var (optional): Sets the compat_var property, which is for holding the name of this mod's compatibility variable. Nothing in this module accesses this property; feel free to leave it empty unless your script needs it.
+	postpone_setup (optional): if True, prevents the mod from immediately running self.setup() to determine its name and global variables from its path.
 	'''
-	def __init__( self, workshop_item:str|None = None, mod_path:str|None = None, parents:list[Mod] = [], is_base:bool=False, key:str|None=None, compat_var:str|None=None ) -> None:
+	def __init__( self, workshop_item:str|int|None = None, mod_path:str|None = None, parents:Iterable['Mod'] = [], children:Iterable['Mod'] = [], is_base:bool=False, key:str|None=None, compat_var:str|None=None, version:str|int|float|None=None, postpone_setup:bool = False, postpone_registration = False, layer:Number|None=None ) -> None:
+		if isinstance(workshop_item,int):
+			workshop_item = str(workshop_item)
 		if mod_path is None:
-			self.mod_path = os.path.join( globalSettings['workshop_path'], workshop_item )
+			self.mod_path:str = os.path.join( globalSettings['workshop_path'], workshop_item )
 		else:
-			self.mod_path = mod_path
-		self.parents = parents
+			self.mod_path:str = mod_path
+		self.base_path:Path|zip.Path|None = None
+		self.parents = []
+		self.children = []
+		self.immediate_parents = []
+		self.immediate_children = []
+		self.put_before_mods = []
+		for parent in parents:
+			self.add_parent(parent)
+		for child in children:
+			self.add_child(child)
 		self.is_base = is_base
 		self.key = key
-		if key is not None:
-			registered_mods[key] = self
 		self.compat_var = compat_var
 		self.content_dictionaries = {}
 		self.content_lists = {}
 		self.mod_name = '[UNNAMED]'
-		globalSettings['mod_order'] = [self]+globalSettings['mod_order']
+		if isinstance(version,int):
+			version = float(version)
+		if isinstance(version,float):
+			version = str(version)
+		if version is None:
+			self.version = None
+		else:
+			self.version = Version(version)
 		self.metascripts_loaded = False
-		self.load_global_variables()
-		self.giveName()
-		if self.is_base and vanilla_mod_object is not None:
-			vanilla_mod_object.inherit_content_dictionary('global_variables')
+		self.registered = False
+		self.set_up = False
+		if not postpone_registration:
+			self.register()
+		if not postpone_setup:
+			self.setup()
+		if layer is None:
+			if self.is_base:
+				layer = 0
+			else:
+				layer = 3
+		self.layer = layer
+
+	def register(self,key=None):
+		if key is None:
+			key = self.key
+		else:
+			registered_mods.pop(self.key)
+			self.key = key
+		if key is not None:
+			registered_mods[key] = self
+		if not self in get_mod_order():
+			get_mod_order().insert(0,self)
+		self.registered = True
+		self.global_vars_setup()
+	
+	def deregister(self):
+		if self.key in registered_mods:
+			registered_mods.pop(self.key)
+		get_mod_order().remove(self)
+		for mod in get_mod_order():
+			for l in (mod.parents,mod.children,mod.immediate_parents,mod.immediate_children,mod.put_before_mods):
+				if self in l:
+					l.remove(self)
+		self.registered = False
+
+	def setup(self):
+		contents = os.listdir(self.mod_path)
+		first_item = contents[0]
+		if first_item.endswith('.zip'):
+			zip_file = zip.ZipFile( os.path.join( self.mod_path, first_item ) )
+			self.base_path = zip.Path(zip_file)
+		else:
+			self.base_path = Path(self.mod_path)
+		descriptor_path = self.folder('descriptor.mod')
+		if descriptor_path.exists():
+			descriptor = fileToCW( descriptor_path )
+			self.mod_name = descriptor.getValue('name')
+			if self.version is None:
+				version = descriptor.getValue('supported_version')
+				self.version = Version(version)
+		elif self.is_base:
+			self.mod_name = "Vanilla"
+			if self.version is None:
+				self.version = get_game_version()
+		else:
+			self.version = Version("2.3")
+		self.set_up = True
+		self.global_vars_setup()
+
+	def global_vars_setup(self):
+		if self.registered and self.set_up:
+			self.load_global_variables()
+			if self.is_base and vanilla_mod_object is not None:
+				vanilla_mod_object.inherit_content_dictionary('global_variables')
+
+	def add_parent(self,mod:Mod):
+		if not mod in self.parents:
+			self.parents.append(mod)
+			mod.add_child(self)
+			for grandparent in mod.parents:
+				self.add_parent(grandparent)
+			for child in self.children:
+				child.add_parent(mod)
+
+	def add_child(self,mod:Mod):
+		if not mod in self.children:
+			self.children.append(mod)
+			mod.add_parent(self)
+			for grandchild in mod.children:
+				self.add_child(grandchild)
+			for parent in self.parents:
+				parent.add_child(mod)
+
+	def put_before(self,mod:Mod):
+		if not mod in self.put_before_mods:
+			self.put_before_mods.append(mod)
+
+	def set_layer(self,layer:Number):
+		self.layer = layer
+
+	def has_indirect_parent(self,mod:Mod):
+		for parent in self.parents:
+			if mod in parent.parents:
+				return True
+		return False
+
+	def has_indirect_child(self,mod:Mod):
+		for child in self.children:
+			if mod in child.children:
+				return True
+		return False
+
+	def detect_immediate_parents_and_children(self):
+		self.immediate_parents = [ m for m in self.parents if not self.has_indirect_parent(m) ]
+		self.immediate_children = [ m for m in self.children if not self.has_indirect_parent(m) ]
 
 	def __str__(self) -> str:
 		return self.mod_name
+
+	def __repr__(self) -> str:
+		if self.key is not None:
+			return f"MOD {self.key}"
+		elif self.compat_var is not None:
+			return f"MOD @{self.compat_var}"
+		elif self.mod_name != "[UNNAMED]":
+			return f"MOD \"{self.mod_name}\""
+		elif self.mod_path is not None:
+			return f"MOD at: {self.mod_path}"
+		else:
+			return "MOD (UNNAMED)"
 
 	def load_global_variables(self) -> Self:
 		self.generate_content_dictionary( 'global_variables', in_common('scripted_variables'), primary_key_rule = lambda x: x.name[1:], replace_local_variables=False )
 		self.inherit_content_dictionary('global_variables')
 		return self
-
-	def giveName(self):
-		descriptor_path = os.path.join(self.mod_path,'descriptor.mod')
-		if os.path.exists(descriptor_path):
-			descriptor = fileToCW( descriptor_path )
-			self.mod_name = descriptor.getValue('name')
-		else:
-			self.mod_name = "Vanilla"
 
 	def activate(self):
 		'''sets this mod as the current active mod - inline scripts and global variables will be sourced from this mod, its parents, and mods where base=True'''
@@ -1336,7 +1591,7 @@ class Mod():
 
 	def inheritance(self) -> Generator[Mod,None,None]:
 		'''yields the mod, then each of its parents in reverse load order, then vanilla'''
-		for mod in globalSettings['mod_order']:
+		for mod in get_mod_order():
 			if self.inherits_from(mod):
 				yield mod
 
@@ -1344,7 +1599,7 @@ class Mod():
 		return ( (other == self) or other.is_base or (other in self.parents) )
 
 	def lookupInline(self,inline:str) -> str:
-		'''returns the path to the file an inline script would find if used with this mod, its parents, and no other mods
+		'''returns the path to the file an inline script would find if used with this mod, its parents, mods with is_base True, and no other mods
 		parameters:
 		inline'''
 		inline_breakdown = inline.split('/')
@@ -1352,47 +1607,58 @@ class Mod():
 		for folder in inline_breakdown:
 			inline_path = os.path.join( inline_path, folder )
 		for mod in self.inheritance():
-			try_path = os.path.join( mod.mod_path, inline_path )
-			if os.path.exists( try_path+'.txt' ):
-				return try_path+'.txt'
-			if os.path.exists(try_path):
+			try_path = mod.folder(inline_path+".txt")
+			if try_path.exists():
 				return try_path
-			
-	def folder( self, *path:list[str] ) -> str:
-		return os.path.join( self.mod_path, *path )
+			try_path = mod.folder(inline_path)
+			if try_path.exists():
+				return try_path
+
+	def folder( self, *path:list[str] ) -> Path|zip.Path:
+		return self.base_path.joinpath( *path )
 	
+	def uses_folder(self,*folder:list[str]):
+		folder = self.folder(*folder)
+		if folder.exists():
+			for _ in folder.iterdir():
+				return True
+		return False
+
 	def global_variables(self,key):
-		variables = self.content_dictionaries['global_variables']
+		variables = self.get_content_dictionary('global_variables')
 		if key in variables:
 			return variables[key].value
 		else:
 			return None
 	
 	def scripted_triggers(self):
-		return self.content_dictionaries['scripted_triggers']
+		return self.get_content_dictionary('scripted_triggers')
 	
 	def scripted_effects(self):
-		return self.content_dictionaries['scripted_effects']
+		return self.get_content_dictionary('scripted_effects')
 	
 	def script_values(self):
-		return self.content_dictionaries['script_values']
+		return self.get_content_dictionary('script_values')
 
-	def getFiles( self, path:str, exclude_files:list[str]=[], include_parents:bool|None=None, file_suffix:str='.txt' ):
+	def getFiles( self, path:str, exclude_files:list[str]=[], include_parents:bool|Callable[[Mod],bool]|None=None, file_suffix:str='.txt' ):
 		if include_parents is None:
 			include_parents = self.is_base
+		if isinstance(include_parents,bool):
+			include_parents_function = lambda _: include_parents
+		else:
+			include_parents_function = include_parents
 		exclude_files = exclude_files.copy()
 		exclude_files.append('99_README_EDICTS.txt') # please no-one else do whatever this one Vanilla file is doing
 		for mod in self.inheritance():
-			if (mod == self) or include_parents:
+			if (mod == self) or include_parents_function(mod):
 				folder = mod.folder(path)
-				if os.path.exists(folder):
-					for file in os.listdir(path=folder):
-						if file.endswith(file_suffix) and not file in exclude_files:
-							filepath = os.path.join(folder,file)
-							exclude_files.append(file)
-							yield filepath
+				if folder.exists():
+					for file in folder.iterdir():
+						if (file.suffix == file_suffix) and not (file.name in exclude_files):
+							exclude_files.append(file.name)
+							yield file
 
-	def read_folder( self, path:str, exclude_files:list[str]=[], replace_local_variables:bool|None=None, include_parents:bool|None=None, file_suffix:str='.txt', parser_commands:str|list[str]|None=None, overwrite_type:str|None='LIOS', bracketClass:type=CWListValue, save:bool=True, save_key:str|None=None, print_filenames:bool = False, always_read:bool=False ) -> CWList[CWElement]:
+	def read_folder( self, path:str, exclude_files:list[str]=[], replace_local_variables:bool|None=None, include_parents:bool|Callable[[Mod],bool]|None=None, file_suffix:str='.txt', parser_commands:str|list[str]|None=None, overwrite_type:str|None='LIOS', bracketClass:type=CWListValue, save:bool=True, save_key:str|None=None, print_filenames:bool = False, always_read:bool=False ) -> CWList[CWElement]:
 		'''reads and parses the files in the specified folder in this mod into a CWList object
 		parameters:
 		path: the path to the specified folder, relative to the mod
@@ -1415,10 +1681,10 @@ class Mod():
 			return self.content_lists[path]
 		else:
 			CW_list = CWList(bracketClass=bracketClass)
-			for filepath in self.getFiles( path, exclude_files=exclude_files, include_parents=include_parents, file_suffix=file_suffix ):
+			for file in self.getFiles( path, exclude_files=exclude_files, include_parents=include_parents, file_suffix=file_suffix ):
 				if print_filenames:
-					print(filepath)
-				CW_list = CW_list + fileToCW( filepath, replace_local_variables=replace_local_variables, parser_commands=parser_commands, overwrite_type=overwrite_type, bracketClass=bracketClass, mod=self )
+					print(file.name)
+				CW_list = CW_list + fileToCW( file, replace_local_variables=replace_local_variables, parser_commands=parser_commands, overwrite_type=overwrite_type, bracketClass=bracketClass, mod=self )
 			if save:
 				if save_key is None:
 					save_key = path
@@ -1435,20 +1701,22 @@ class Mod():
 					new_dict[k] = obj
 
 	def generate_content_dictionary( self, key, folder_path, primary_key_rule=lambda e:e.name, element_filter = lambda _:True, **kwargs ):
-		list = self.read_folder( path=folder_path, **kwargs )
-		content_dict = self.content_dictionaries.setdefault(key,{})
-		for element in list:
+		cwl = self.read_folder( path=folder_path, **kwargs )
+		content_dict = self.get_content_dictionary(key)
+		for element in cwl:
 			if element_filter(element):
 				content_dict[ primary_key_rule(element) ] = element
 
+	def get_content_dictionary(self,key):
+		return self.content_dictionaries.setdefault(key,{})
+
 	def load_events(self):
 		eventTypes = globalSettings['eventTypes']
-		self.content_dictionaries['events'] = {}
 		events = self.read_folder('events',overwrite_type='FIOS',print_filenames=True)
 		for event in events.contents():
 			if event.hasSubelements():
 				event_id = event.getValue('id',resolve=True)
-				self.content_dictionaries['events'][event_id] = event
+				self.get_content_dictionary('events')[event_id] = event
 				if event.name.lower() in eventTypes:
 					globalData['eventScopes'][event_id] = scopesContext(eventTypes[event.name.lower()],lock=True)
 
@@ -1473,6 +1741,10 @@ class Mod():
 
 	def events(self) -> Generator[CWElement,None,None]:
 		yield from self.content_lists['events'].contents()
+
+	def priority(self) -> int:
+		mod_order = get_mod_order()
+		return ( len(mod_order) - mod_order.index(self) )
 
 class metascriptSubstitution():
 	def __init__(self,keys:list[str]=[],default:str|None=''):
@@ -1630,7 +1902,7 @@ def stringToCW( string:str, filename:str|None=None, parent:CWElement|None=None, 
 		debug=debug,
 	)
 
-def fileToCW( path:str, filename:str|None=None, parent:CWElement|None=None, replace_local_variables:bool|None=None, parser_commands:str|list[str]|None=None, overwrite_type:str|None='LIOS', mod:Mod|None=None, bracketClass:type=CWListValue, debug=False )->CWList[CWElement]:
+def fileToCW( path:str|Path|zip.Path, filename:str|None=None, parent:CWElement|None=None, replace_local_variables:bool|None=None, parser_commands:str|list[str]|None=None, overwrite_type:str|None='LIOS', mod:Mod|None=None, bracketClass:type=CWListValue, debug=False )->CWList[CWElement]:
 	'''reads and parses a file into a list of CWElement objects
 	parameters:
 	path: The file path.
@@ -1641,19 +1913,42 @@ def fileToCW( path:str, filename:str|None=None, parent:CWElement|None=None, repl
 	"#KEY:add_metadata:<metadata key>:<metadata value>": set the specified attribute in the "metadata" dictionary to the specified value for the next object
 	"#KEY:add_block_metadata:<metadata key>:<metadata value>", "#KEY:/add_block_metadata:<metadata key>": set the specified attribute in the "metadata" dictionary to the specified value for each top-level object between these tags
 	'''
-	file = open(path,"r",encoding='utf-8')
-	fileContents = file.read()
+	if isinstance(path,str):
+		path = Path(path)
+	fileContents = file_text(path)
 	if filename is None:
-		filename = os.path.basename(path)
-	cw = stringToCW( fileContents, filename=filename, parent=parent, replace_local_variables=replace_local_variables, parser_commands=parser_commands, overwrite_type=overwrite_type, mod=mod, bracketClass=bracketClass, debug=debug )
-	return cw
+		filename = path.name
+	return stringToCW( fileContents, filename=filename, parent=parent, replace_local_variables=replace_local_variables, parser_commands=parser_commands, overwrite_type=overwrite_type, mod=mod, bracketClass=bracketClass, debug=debug )
 
-vanilla_mod_object = Mod( mod_path = globalSettings['vanilla_path'], is_base=True, key='base', compat_var='1' )
+def set_vanilla_mod_subclass( mod_subclass:type ):
+	global vanilla_mod_object
+	configure( 'mod_order', [] )
+	vanilla_mod_object = mod_subclass( mod_path = globalSettings['vanilla_path'], is_base=True, key='base', compat_var='1', postpone_setup=True )
+
+set_vanilla_mod_subclass(Mod)
 
 def set_vanilla_path(path:str):
 	'''tells the module where to find vanilla content'''
 	configure('vanilla_path',path)
 	vanilla_mod_object.mod_path = path
+	if os.path.exists(path):
+		vanilla_mod_object.version = None
+		configure('game_version',None)
+		vanilla_mod_object.setup()
+
+def get_vanilla_path():
+	return globalSettings['vanilla_path']
+
+def get_game_version():
+	if globalSettings['game_version'] is None:
+		try:
+			launcher_settings_path = os.path.join( get_vanilla_path, 'launcher_settings' )
+			launcher_settings = json.load(launcher_settings_path) # could FileToCW handle it? Maybe. Fortunately it doesn't need to
+			version = launcher_settings['rawVersion']
+			configure('game_version',Version(version))
+		except:
+			pass
+	return globalSettings['game_version']
 
 def set_mod_docs_path(path:str):
 	'''tells the module where to find your mods'''
@@ -1675,12 +1970,19 @@ def set_parser_commands(value:list[str]):
 	'''switches what parser command identifiers to use'''
 	configure('parser_commands',value)
 
-def set_load_order(mods:list[Mod]):
-	'''given a list of mods, move those mods to the end of assumed load order (with the first listed mod coming last)'''
-	load_order = globalSettings['mod_order']
-	for mod in mods:
-		load_order.remove(mod)
-	configure('mod_order',mods+load_order)
+def auto_set_load_order():
+	print("generating a load order")
+	graph = {}
+	for mod in registered_mods.values():
+		child_keys = { child.key for child in mod.children if ( child.key and not ( child in mod.parents ) ) }
+		put_before_keys = { m.key for m in mod.put_before_mods if m.key }
+		layer_based_keys = { key for key in registered_mods if (registered_mods[key].layer > mod.layer) }
+		graph[mod.key] = child_keys.union(put_before_keys).union(layer_based_keys)
+	ts = TopologicalSorter(graph)
+	ordered_keys = list(ts.static_order())
+	ordered_mods = [ registered_mods[key] for key in ordered_keys ]
+	set_load_order(ordered_mods)
+
 
 class scopeUnpackable(ABC):
 	@abstractmethod
